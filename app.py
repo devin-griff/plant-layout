@@ -61,6 +61,7 @@ import io
 import math
 import os
 import random
+import threading
 import time
 from pathlib import Path
 
@@ -567,6 +568,13 @@ def build_model(n, l0, w0, cmat, d_uniform, rotate, sym):
     return m
 
 
+# One solve at a time per machine: every Streamlit session runs app.py in
+# its own thread of this one process, and the solver-log capture redirects
+# process-global stdout. Overlapping captures corrupt each other and fail
+# both solves, so every solve serializes behind this lock.
+_SOLVE_LOCK = threading.Lock()
+
+
 class _LicenseBusyError(RuntimeError):
     """Raised when Gurobi's WLS checkout fails even after a retry -
     typically the license's concurrent-session seats are all taken.
@@ -583,9 +591,10 @@ def _run_gurobi(m, time_limit, extract_fn, pool_size):
     The native interface (not the legacy SolverFactory("appsi_gurobi"))
     is required: the legacy wrapper's symbol-map bookkeeping crashes on
     GDP-transformed models ('DisjunctData' has no attribute 'solutions').
-    Gurobi checks out a WLS seat when its environment starts; a checkout
-    collision gets one quiet retry, then surfaces as license_busy, and
-    the seat is always released afterward."""
+    The first solve after a machine wakes checks out the WLS session; the
+    session is then held for the process lifetime (hold while awake), so
+    later solves skip the checkout round trip. A checkout collision gets
+    one quiet retry, then surfaces as license_busy."""
     from pyomo.contrib.appsi.solvers import Gurobi as AppsiGurobi
 
     opt = AppsiGurobi()
@@ -602,33 +611,27 @@ def _run_gurobi(m, time_limit, extract_fn, pool_size):
     opt.gurobi_options['MIPFocus'] = 1
     buf = io.StringIO()
     sols = []
-    try:
-        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-            for attempt in (1, 2):
-                try:
-                    res = opt.solve(m)
-                    break
-                except Exception as e:
-                    lowered = str(e).lower()
-                    if "license" in lowered or "wls" in lowered:
-                        if attempt == 1:
-                            time.sleep(2.0)
-                            continue
-                        raise _LicenseBusyError(str(e)) from e
-                    raise
-            if res.best_feasible_objective is not None:
-                # Pull each pooled solution into a plain layout dict while the
-                # model is still loaded. load_vars(solution_number=k) switches
-                # Gurobi's active solution to pool member k (k=0 is the best).
-                n_pool = int(opt._solver_model.SolCount)
-                for k in range(min(n_pool, int(pool_size))):
-                    res.solution_loader.load_vars(solution_number=k)
-                    sols.append(extract_fn())
-    finally:
-        try:
-            opt.release_license()
-        except Exception:
-            pass
+    with _SOLVE_LOCK, contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        for attempt in (1, 2):
+            try:
+                res = opt.solve(m)
+                break
+            except Exception as e:
+                lowered = str(e).lower()
+                if "license" in lowered or "wls" in lowered:
+                    if attempt == 1:
+                        time.sleep(2.0)
+                        continue
+                    raise _LicenseBusyError(str(e)) from e
+                raise
+        if res.best_feasible_objective is not None:
+            # Pull each pooled solution into a plain layout dict while the
+            # model is still loaded. load_vars(solution_number=k) switches
+            # Gurobi's active solution to pool member k (k=0 is the best).
+            n_pool = int(opt._solver_model.SolCount)
+            for k in range(min(n_pool, int(pool_size))):
+                res.solution_loader.load_vars(solution_number=k)
+                sols.append(extract_fn())
 
     log = buf.getvalue()
     # Map the appsi TerminationCondition onto the legacy enum this module
