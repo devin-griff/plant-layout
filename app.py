@@ -630,13 +630,7 @@ def _run_gurobi(m, time_limit, extract_fn, pool_size):
         except Exception:
             pass
 
-    # Scrub license-identifying lines before the log reaches the Logs tab
-    # (Gurobi's WLS banner prints the license ID and registrant).
-    log = "\n".join(
-        ln for ln in buf.getvalue().splitlines()
-        if not any(k in ln.lower()
-                   for k in ("wls", "registered to", "academic license"))
-    )
+    log = buf.getvalue()
     # Map the appsi TerminationCondition onto the legacy enum this module
     # branches on; names match for the cases we handle, else `unknown`.
     tc = getattr(
