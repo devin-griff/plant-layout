@@ -571,8 +571,13 @@ def build_model(n, l0, w0, cmat, d_uniform, rotate, sym):
 # One solve at a time per machine: every Streamlit session runs app.py in
 # its own thread of this one process, and the solver-log capture redirects
 # process-global stdout. Overlapping captures corrupt each other and fail
-# both solves, so every solve serializes behind this lock.
-_SOLVE_LOCK = threading.Lock()
+# both solves, so every solve serializes behind one process-wide lock.
+# The lock must come from st.cache_resource: Streamlit re-executes this
+# script per rerun in a fresh namespace, so a bare module-level Lock
+# would be a new object every rerun and would serialize nothing.
+@st.cache_resource(show_spinner=False)
+def _solve_lock():
+    return threading.Lock()
 
 
 class _LicenseBusyError(RuntimeError):
@@ -611,7 +616,7 @@ def _run_gurobi(m, time_limit, extract_fn, pool_size):
     opt.gurobi_options['MIPFocus'] = 1
     buf = io.StringIO()
     sols = []
-    with _SOLVE_LOCK, contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+    with _solve_lock(), contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
         for attempt in (1, 2):
             try:
                 res = opt.solve(m)
