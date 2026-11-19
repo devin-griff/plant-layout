@@ -1,6 +1,6 @@
 # Two-tier pinning strategy:
 #
-# Tier 1 — exact pin. The native appsi Gurobi APIs we use
+# Tier 1: exact pin. The native appsi Gurobi APIs we use
 # (config.load_solution=False; res.best_feasible_objective;
 # res.solution_loader.load_vars()) have shifted across minor releases,
 # and the legacy appsi wrapper crashes on GDP-transformed models on
@@ -9,7 +9,14 @@
 pyomo==6.10.0
 gurobipy~=13.0
 #
-# Tier 2 — compatible release. Stable surface APIs at our usage level
+# pyarrow is a transitive Streamlit dependency, capped because 25.0.0
+# segfaults the process while converting this app's layout chart to
+# Arrow, which killed every solve on the deployed machine. 21.0.0 and
+# 24.0.0 both render the same chart from the same solve. Streamlit only
+# asks for pyarrow>=7.0, so without this cap a rebuild takes the newest.
+pyarrow<25
+#
+# Tier 2: compatible release. Stable surface APIs at our usage level
 # (sliders, charts), so accept patch upgrades for security and bug fixes.
 # pandas stays on 2.x: Streamlit 1.52 caps pandas <3, so pandas~=3.0 makes
 # the image's pip resolve impossible. The app uses no st.dataframe/.style, so
